@@ -7,7 +7,7 @@
   "author": "Benedict Armstrong",
   "homepage": "https://github.com/benedict-armstrong/potentialpaper-acceptodds-map",
   "main": "index.html",
-  "publisher": "benedict-armstrong",
+  "publisher": "acceptodds-map",
   "contributes": {
     "signals": [
       {

@@ -13,7 +13,8 @@ A [PotentialPaper](https://github.com/PotentialHedge/potentialpaper) signal set:
 | `map.cluster` | label         | Its close group (Leiden, fine), named the same way |
 | `embedding`   | vector, 64    | OpenAI `text-embedding-3-small`, cut to 64 dimensions by PCA and scaled to whole numbers, for nearest papers |
 
-They are declared in `potentialpaper-plugin.json`, whose `publisher` is the account that writes them. Papers are named
+They are declared in `potentialpaper-plugin.json`, whose `publisher` is the account that writes them: the bot
+`acceptodds-map`, so the key the copy runs with can write these signals and nothing else. Papers are named
 by OpenReview id, so a value waits for its paper if the site doesn't have it yet.
 
 ## How it is copied
@@ -29,7 +30,7 @@ PP_TOKEN=pp_live_… node sync.mjs --watch         # every 30 minutes (WATCH_MIN
 PP_TOKEN=pp_live_… node sync.mjs --from-files map.json iclr2027.sqlite   # from the map builder's own files
 ```
 
-`PP_TOKEN` is an API key of the publisher's account that may write (made on your profile on the site). `PP_SITE`,
+`PP_TOKEN` is an API key of the publisher's account that may write. `PP_SITE`,
 `AO_SITE`, `AO_KIND` and `SOURCE` change where it copies from and to.
 
 A GitHub Actions workflow (`.github/workflows/sync.yml`) runs it every six hours with the `PP_TOKEN` secret, and on
