@@ -3,15 +3,16 @@
 // every paper's place on the map, its region and cluster, and its small embedding. It starts a new generation, writes
 // all of it, and publishes it, so readers switch from the old map to the new one at once.
 //
-//   PP_TOKEN=pp_live_… node sync.mjs               copy once, if acceptodds' map changed since the last copy
-//   PP_TOKEN=pp_live_… node sync.mjs --force       copy even if it didn't
-//   PP_TOKEN=pp_live_… node sync.mjs --watch       check every 30 minutes (WATCH_MINUTES), forever
-//   PP_TOKEN=pp_live_… node sync.mjs --from-files map.json iclr2027.sqlite
-//                                                  copy from the map builder's own files instead of acceptodds.com
+//   node sync.mjs                                  copy once, if acceptodds' map changed since the last copy
+//   node sync.mjs --force                          copy even if it didn't
+//   node sync.mjs --watch                          check every 30 minutes (WATCH_MINUTES), forever
+//   node sync.mjs --from-files map.json iclr2027.sqlite
+//                                                  copy from the map builder's own files instead
 //
+// ACCEPTODDS_DATABASE_URL is acceptodds' database, as a role that may only read map_points, map_topics and listings.
 // PP_TOKEN is an API key of the publisher's account (the manifest's "publisher") that may write. PP_SITE
-// (https://papers.potentialhedge.com), AO_SITE (https://acceptodds.com), AO_KIND (ICLR 2027) and SOURCE (this repo on
-// GitHub) say where from and to. The last copy's fingerprint is kept in .last-sync.
+// (https://papers.potentialhedge.com), AO_KIND (ICLR 2027) and SOURCE (this repo on GitHub) say where from and to. The
+// last copy's fingerprint is kept in STATE_FILE (.last-sync).
 
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -22,47 +23,47 @@ const here = dirname(fileURLToPath(import.meta.url));
 const manifest = JSON.parse(readFileSync(join(here, 'potentialpaper-plugin.json'), 'utf8'));
 const SET = manifest.id;
 const PP_SITE = (process.env.PP_SITE ?? 'https://papers.potentialhedge.com').replace(/\/$/, '');
-const AO_SITE = (process.env.AO_SITE ?? 'https://acceptodds.com').replace(/\/$/, '');
 const AO_KIND = process.env.AO_KIND ?? 'ICLR 2027';
 const SOURCE = process.env.SOURCE ?? 'github:benedict-armstrong/potentialpaper-acceptodds-map';
-const STATE = join(here, '.last-sync');
+const STATE = process.env.STATE_FILE ?? join(here, '.last-sync');
 /** Values a write carries; the site takes up to 5,000. */
 const CHUNK = 4000;
 
 const log = (...args) => console.log(new Date().toISOString(), ...args);
 
-async function getJson(url) {
-  const res = await fetch(url, { headers: { accept: 'application/json', 'user-agent': 'potentialpaper-acceptodds-map' } });
-  if (!res.ok) throw new Error(`GET ${url}: ${res.status} ${(await res.text()).slice(0, 300)}`);
-  return res.json();
-}
-
 /**
  * The map as one list: `{ points: [{ id, x, y, region, cluster, vector }], regions, clusters }`, `id` the paper's
- * OpenReview forum id. Points without one are left out, since nothing else names the paper.
+ * OpenReview forum id, from its listing's OpenReview link. Read straight from acceptodds' database
+ * (ACCEPTODDS_DATABASE_URL, a role that may only read the map's tables). Points without an id are left out, since
+ * nothing else names the paper.
  */
 async function fromAcceptodds() {
-  const kind = encodeURIComponent(AO_KIND);
-  const [map, exported] = await Promise.all([
-    getJson(`${AO_SITE}/api/v1/map?kind=${kind}`),
-    getJson(`${AO_SITE}/api/v1/map/export?kind=${kind}`),
-  ]);
-  const at = new Map(exported.slugs.map((slug, i) => [slug, i]));
-  const points = [];
-  map.slugs.forEach((slug, i) => {
-    const j = at.get(slug);
-    const id = j === undefined ? null : exported.openreview[j];
-    if (!id) return;
-    points.push({
-      id,
-      x: map.x[i],
-      y: map.y[i],
-      region: map.region[i],
-      cluster: map.cluster[i],
-      vector: exported.vectors[j],
-    });
-  });
-  return { points, regions: map.regions, clusters: map.clusters, skipped: map.slugs.length - points.length };
+  const { default: pg } = await import('pg');
+  const client = new pg.Client({ connectionString: process.env.ACCEPTODDS_DATABASE_URL });
+  await client.connect();
+  try {
+    const { rows } = await client.query(
+      `select m.slug, m.x, m.y, m.region, m.cluster, m.vector, l.links
+         from map_points m join listings l on l.slug = m.slug
+        where m.kind = $1 order by m.slug`,
+      [AO_KIND],
+    );
+    const topics = await client.query(
+      'select level, number, label from map_topics where kind = $1 order by level, number',
+      [AO_KIND],
+    );
+    const points = [];
+    for (const r of rows) {
+      const link = (r.links ?? []).find((l) => /^https:\/\/openreview\.net\/forum\?id=/.test(l.url));
+      const id = link ? new URL(link.url).searchParams.get('id') : null;
+      if (!id) continue;
+      points.push({ id, x: r.x, y: r.y, region: r.region, cluster: r.cluster, vector: r.vector });
+    }
+    const level = (name) => topics.rows.filter((t) => t.level === name).map(({ number, label }) => ({ number, label }));
+    return { points, regions: level('region'), clusters: level('cluster'), skipped: rows.length - points.length };
+  } finally {
+    await client.end();
+  }
 }
 
 /** The same, from the builder's `map.json` and the scrape it was built from (which names each submission number). */

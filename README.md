@@ -19,19 +19,31 @@ by OpenReview id, so a value waits for its paper if the site doesn't have it yet
 
 ## How it is copied
 
-`sync.mjs` (Node 22.5 or later, no dependencies) reads `GET /api/v1/map` and `GET /api/v1/map/export` from
-acceptodds, and writes the whole map to the site as a new generation of the set, which it then publishes: readers
-switch from the old map to the new one at once. It copies only when the map changed since the last copy.
+`sync.mjs` (Node 22.5 or later) reads the map straight from acceptodds' database (`map_points`, `map_topics`, and
+`listings` for each paper's OpenReview id), and writes the whole map to the site as a new generation of the set, which
+it then publishes: readers switch from the old map to the new one at once. It copies only when the map changed since
+the last copy.
+
+It runs on the server that hosts acceptodds, in a container on acceptodds' database network
+(`docker-compose.yml`), checking every 30 minutes:
 
 ```sh
-PP_TOKEN=pp_live_… node sync.mjs                 # once, if the map changed
-PP_TOKEN=pp_live_… node sync.mjs --force         # once, anyway
-PP_TOKEN=pp_live_… node sync.mjs --watch         # every 30 minutes (WATCH_MINUTES)
-PP_TOKEN=pp_live_… node sync.mjs --from-files map.json iclr2027.sqlite   # from the map builder's own files
+SYNC_ENV=/path/to/sync.env docker compose up -d --build
+docker compose logs -f sync
 ```
 
-`PP_TOKEN` is an API key of the publisher's account that may write. `PP_SITE`,
-`AO_SITE`, `AO_KIND` and `SOURCE` change where it copies from and to.
+`sync.env` holds two secrets, and is not in the repo:
 
-A GitHub Actions workflow (`.github/workflows/sync.yml`) runs it every six hours with the `PP_TOKEN` secret, and on
-demand.
+- `ACCEPTODDS_DATABASE_URL`: acceptodds' database, as the role `potentialpaper_reader`, which may only read
+  `map_points`, `map_topics` and `listings`.
+- `PP_TOKEN`: an API key of the publisher's account, the bot `acceptodds-map`, that may write.
+
+By hand:
+
+```sh
+node sync.mjs                 # once, if the map changed
+node sync.mjs --force         # once, anyway
+node sync.mjs --from-files map.json iclr2027.sqlite   # from the map builder's own files instead
+```
+
+`PP_SITE`, `AO_KIND` (`ICLR 2027`), `SOURCE` and `WATCH_MINUTES` change where it copies from and to, and how often.

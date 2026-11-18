@@ -1,0 +1,26 @@
+# Runs the copy on the server that hosts acceptodds, beside its database: every 30 minutes it checks the map and copies
+# it when it changed. `sync.env` (not in the repo) holds ACCEPTODDS_DATABASE_URL and PP_TOKEN.
+#
+#   SYNC_ENV=/path/to/sync.env docker compose up -d --build
+name: potentialpaper-acceptodds-map
+
+services:
+  sync:
+    build: .
+    restart: unless-stopped
+    env_file: ${SYNC_ENV:-sync.env}
+    environment:
+      STATE_FILE: /state/last-sync
+    volumes:
+      - state:/state
+    networks:
+      - acceptodds
+
+volumes:
+  state:
+
+networks:
+  # acceptodds' own network, so its database is reachable by its container name.
+  acceptodds:
+    name: acceptodds-sfw_default
+    external: true
