@@ -1,10 +1,14 @@
 #!/usr/bin/env node
-// Copies the acceptodds paper map into a PotentialPaper signal set (this repo's manifest), whole, as one generation:
-// every paper's place on the map, its region and cluster, and its small embedding. It starts a new generation, writes
-// all of it, and publishes it, so readers switch from the old map to the new one at once.
+// Copies the acceptodds paper map into a PotentialPaper signal set (this repo's manifest): every paper's place on the
+// map, its region and cluster, and its small embedding.
 //
-//   node sync.mjs                                  copy once, if acceptodds' map changed since the last copy
-//   node sync.mjs --force                          copy even if it didn't
+// Only what changed is sent. The last copy's state (STATE_FILE) keeps a short hash of each paper's four values, and a
+// run sends just the papers that are new or whose values changed, and removes those that left the map. A rebuild of
+// the map, which moves most papers, goes in whole as a new generation instead, published at once, so readers never see
+// half the old layout and half the new; so does the first copy, and any copy after someone else published a generation.
+//
+//   node sync.mjs                                  copy once: what changed since the last copy
+//   node sync.mjs --force                          copy the whole map, as a new generation
 //   node sync.mjs --watch                          check every 30 minutes (WATCH_MINUTES), forever
 //   node sync.mjs --from-files map.json iclr2027.sqlite
 //                                                  copy from the map builder's own files instead
@@ -12,7 +16,7 @@
 // ACCEPTODDS_DATABASE_URL is acceptodds' database, as a role that may only read map_points, map_topics and listings.
 // PP_TOKEN is an API key of the publisher's account (the manifest's "publisher") that may write. PP_SITE
 // (https://papers.potentialhedge.com), AO_KIND (ICLR 2027) and SOURCE (this repo on GitHub) say where from and to. The
-// last copy's fingerprint is kept in STATE_FILE (.last-sync).
+// last copy's state is kept in STATE_FILE (.last-sync).
 
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -28,6 +32,10 @@ const SOURCE = process.env.SOURCE ?? 'github:benedict-armstrong/potentialpaper-a
 const STATE = process.env.STATE_FILE ?? join(here, '.last-sync');
 /** Values a write carries; the site takes up to 5,000. */
 const CHUNK = 4000;
+/** The four signals each paper has. */
+const SIGNALS = ['map.xy', 'map.region', 'map.cluster', 'embedding'];
+/** Above this share of papers changed, it's a rebuild: copy it whole, as a new generation. */
+const REBUILD_SHARE = 0.3;
 
 const log = (...args) => console.log(new Date().toISOString(), ...args);
 
@@ -81,8 +89,40 @@ async function fromFiles(mapPath, sqlitePath) {
   return { points, regions: map.regions, clusters: map.clusters, skipped: map.points.length - points.length };
 }
 
-function fingerprint(map) {
-  return createHash('sha256').update(JSON.stringify(map)).digest('hex');
+const hash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+/** A paper's values, by signal, `null` where it has none: what the site holds for it. */
+function paperValues(p) {
+  return {
+    'map.xy': [p.x, p.y],
+    'map.region': p.region === null ? null : String(p.region),
+    'map.cluster': p.cluster === null ? null : String(p.cluster),
+    embedding: Array.isArray(p.vector) && p.vector.length === 64 ? p.vector : null,
+  };
+}
+const paperHash = (p) => hash(paperValues(p)).slice(0, 16);
+const labelsOf = (topics) => topics.map((t) => ({ key: String(t.number), title: t.label }));
+
+/** What a copy leaves behind: the set's generation, each paper's hash, each label signal's. */
+function stateOf(map, generation) {
+  return {
+    version: 2,
+    generation,
+    papers: Object.fromEntries(map.points.map((p) => [p.id, paperHash(p)])),
+    labels: { 'map.region': hash(labelsOf(map.regions)), 'map.cluster': hash(labelsOf(map.clusters)) },
+  };
+}
+
+/** The last copy's state; `{ legacy }` for the first version's, a fingerprint of the whole map. */
+function readState() {
+  if (!existsSync(STATE)) return null;
+  const text = readFileSync(STATE, 'utf8').trim();
+  try {
+    const state = JSON.parse(text);
+    if (state?.version === 2) return state;
+  } catch {
+    // Not JSON: the first version's fingerprint.
+  }
+  return /^[0-9a-f]{64}$/.test(text) ? { legacy: text } : null;
 }
 
 async function site(method, path, body) {
@@ -100,50 +140,88 @@ async function site(method, path, body) {
   return text ? JSON.parse(text) : null;
 }
 
-/** Each point's four values, as the set's signals take them. */
-function valuesOf(map) {
+/** Each point's values as the site takes them; with `nulls`, a `null` removes a value the paper no longer has. */
+function valuesOf(points, { nulls }) {
   const values = [];
-  for (const p of map.points) {
+  for (const p of points) {
     const paper = `openreview:${p.id}`;
-    values.push({ paper, signal: 'map.xy', value: [p.x, p.y] });
-    if (p.region !== null) values.push({ paper, signal: 'map.region', value: String(p.region) });
-    if (p.cluster !== null) values.push({ paper, signal: 'map.cluster', value: String(p.cluster) });
-    if (Array.isArray(p.vector) && p.vector.length === 64) values.push({ paper, signal: 'embedding', value: p.vector });
+    for (const [signal, value] of Object.entries(paperValues(p))) {
+      if (value !== null || nulls) values.push({ paper, signal, value });
+    }
   }
   return values;
 }
 
-async function copy(map) {
-  await site('POST', '/signal-sets', { source: SOURCE });
-  const { generation } = await site('POST', `/signal-sets/${SET}/generations`);
-  const values = valuesOf(map);
+async function writeValues(values, generation) {
+  const at = generation ? `?generation=${generation}` : '';
   for (let i = 0; i < values.length; i += CHUNK) {
-    await site('PUT', `/signal-sets/${SET}/values?generation=${generation}`, { values: values.slice(i, i + CHUNK) });
+    await site('PUT', `/signal-sets/${SET}/values${at}`, { values: values.slice(i, i + CHUNK) });
     log(`wrote ${Math.min(i + CHUNK, values.length)} of ${values.length} values`);
   }
+}
+
+async function writeLabels(map, which, generation) {
+  const at = generation ? `?generation=${generation}` : '';
   for (const [signal, topics] of [
     ['map.region', map.regions],
     ['map.cluster', map.clusters],
   ]) {
-    const labels = topics.map((t) => ({ key: String(t.number), title: t.label }));
-    await site('PUT', `/signal-sets/${SET}/labels?generation=${generation}`, { signal, labels });
+    if (which.includes(signal)) {
+      await site('PUT', `/signal-sets/${SET}/labels${at}`, { signal, labels: labelsOf(topics) });
+    }
   }
+}
+
+/** The whole map as a new generation, published at once. */
+async function copyWhole(map) {
+  await site('POST', '/signal-sets', { source: SOURCE });
+  const { generation } = await site('POST', `/signal-sets/${SET}/generations`);
+  await writeValues(valuesOf(map.points, { nulls: false }), generation);
+  await writeLabels(map, ['map.region', 'map.cluster'], generation);
   await site('POST', `/signal-sets/${SET}/generations/${generation}/publish`);
-  return { generation, values: values.length };
+  log(`published generation ${generation} of ${SET}: ${map.points.length} papers`);
+  return generation;
 }
 
 async function once({ force, files }) {
   const map = files ? await fromFiles(...files) : await fromAcceptodds();
-  const print = fingerprint(map);
-  const last = existsSync(STATE) ? readFileSync(STATE, 'utf8').trim() : null;
-  if (!force && print === last) {
+  const last = readState();
+  const live = (await site('GET', `/signal-sets/${SET}`).catch(() => null))?.generation ?? null;
+  const save = (generation) => writeFileSync(STATE, `${JSON.stringify(stateOf(map, generation))}\n`);
+  const whole = async (why) => {
+    log(`copying the whole map, ${map.points.length} papers (${map.skipped} without an OpenReview id left out): ${why}`);
+    save(await copyWhole(map));
+  };
+  if (force) return whole('asked to');
+  if (!last) return whole('no record of the last copy');
+  if (last.legacy) {
+    // The first version copied whole and kept a fingerprint: if the map is still the one it copied, the site has it.
+    if (last.legacy !== hash(map)) return whole('the map changed since a copy that kept no per-paper record');
+    save(live);
+    log(`recorded the map the site already has (generation ${live}, ${map.points.length} papers)`);
+    return;
+  }
+  if (last.generation !== live) return whole(`the site's live generation is ${live}, not the ${last.generation} last copied`);
+
+  const changed = map.points.filter((p) => last.papers[p.id] !== paperHash(p));
+  const here = new Set(map.points.map((p) => p.id));
+  const gone = Object.keys(last.papers).filter((id) => !here.has(id));
+  const labels = ['map.region', 'map.cluster'].filter(
+    (signal) => last.labels[signal] !== hash(labelsOf(signal === 'map.region' ? map.regions : map.clusters)),
+  );
+  if (changed.length === 0 && gone.length === 0 && labels.length === 0) {
     log(`the map hasn't changed (${map.points.length} papers); nothing to copy`);
     return;
   }
-  log(`copying ${map.points.length} papers (${map.skipped} without an OpenReview id left out) to ${PP_SITE}`);
-  const { generation, values } = await copy(map);
-  writeFileSync(STATE, `${print}\n`);
-  log(`published generation ${generation} of ${SET}: ${values} values`);
+  if (changed.length + gone.length > REBUILD_SHARE * map.points.length) {
+    return whole(`a rebuild: ${changed.length} papers changed and ${gone.length} left`);
+  }
+  log(`${changed.length} papers new or changed, ${gone.length} left the map, labels changed: ${labels.join(', ') || 'none'}`);
+  const removals = gone.flatMap((id) => SIGNALS.map((signal) => ({ paper: `openreview:${id}`, signal, value: null })));
+  await writeValues([...valuesOf(changed, { nulls: true }), ...removals]);
+  await writeLabels(map, labels);
+  save(live);
+  log(`updated generation ${live} of ${SET} in place`);
 }
 
 async function main() {

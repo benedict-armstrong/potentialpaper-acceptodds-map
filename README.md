@@ -20,9 +20,11 @@ by OpenReview id, so a value waits for its paper if the site doesn't have it yet
 ## How it is copied
 
 `sync.mjs` (Node 22.5 or later) reads the map straight from acceptodds' database (`map_points`, `map_topics`, and
-`listings` for each paper's OpenReview id), and writes the whole map to the site as a new generation of the set, which
-it then publishes: readers switch from the old map to the new one at once. It copies only when the map changed since
-the last copy.
+`listings` for each paper's OpenReview id) and sends the site only what changed since the last copy: the papers that
+are new or whose values changed, and removals for papers that left the map. It keeps a short hash of each paper's
+values in its state file to tell. A rebuild of the map, which moves most papers (over 30%), goes in whole instead, as
+a new generation of the set published at once, so readers switch from the old map to the new one in one step. So does
+the first copy, a copy after someone else published a generation, and `--force`.
 
 It runs on the server that hosts acceptodds, in a container on acceptodds' database network
 (`docker-compose.yml`), checking every 30 minutes:
@@ -41,8 +43,8 @@ docker compose logs -f sync
 By hand:
 
 ```sh
-node sync.mjs                 # once, if the map changed
-node sync.mjs --force         # once, anyway
+node sync.mjs                 # once: what changed since the last copy
+node sync.mjs --force         # once, the whole map as a new generation
 node sync.mjs --from-files map.json iclr2027.sqlite   # from the map builder's own files instead
 ```
 
