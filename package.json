@@ -1,0 +1,13 @@
+{
+  "name": "potentialpaper-acceptodds-map",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Copies the acceptodds paper map into a PotentialPaper signal set.",
+  "license": "MIT",
+  "type": "module",
+  "engines": { "node": ">=22.5" },
+  "scripts": {
+    "sync": "node sync.mjs",
+    "watch": "node sync.mjs --watch"
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "id": "benedict-armstrong/acceptodds-map",
+  "name": "acceptodds map",
+  "version": "0.1.0",
+  "apiVersion": 1,
+  "description": "The acceptodds paper map of ICLR 2027 as signals: each paper's place on the map, its region and cluster, and a small embedding, copied from acceptodds.com.",
+  "author": "Benedict Armstrong",
+  "homepage": "https://github.com/benedict-armstrong/potentialpaper-acceptodds-map",
+  "main": "index.html",
+  "publisher": "benedict-armstrong",
+  "contributes": {
+    "signals": [
+      {
+        "id": "map.xy",
+        "kind": "vector",
+        "dims": 2,
+        "metric": "l2",
+        "title": "Place on the map",
+        "description": "Where the paper sits on the acceptodds map: a UMAP layout of its title, TL;DR, abstract and keywords, with neighbours from a reranker."
+      },
+      {
+        "id": "map.region",
+        "kind": "label",
+        "title": "Region",
+        "description": "The paper's broad area on the map (Leiden clusters at a coarse resolution), named by its most typical keywords."
+      },
+      {
+        "id": "map.cluster",
+        "kind": "label",
+        "title": "Cluster",
+        "description": "The paper's close group on the map (Leiden clusters at a fine resolution), named by its most typical keywords."
+      },
+      {
+        "id": "embedding",
+        "kind": "vector",
+        "dims": 64,
+        "metric": "cosine",
+        "title": "Small embedding",
+        "description": "OpenAI text-embedding-3-small of the title, TL;DR, abstract and keywords, cut to 64 dimensions by PCA and scaled to whole numbers: for the nearest papers."
+      }
+    ]
+  }
+}

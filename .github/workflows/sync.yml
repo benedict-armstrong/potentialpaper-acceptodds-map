@@ -1,0 +1,32 @@
+name: Copy the map
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Copy even if the map hasn't changed
+        type: boolean
+        default: false
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      # The last copy's fingerprint, so an unchanged map isn't copied again.
+      - uses: actions/cache/restore@v4
+        with:
+          path: .last-sync
+          key: last-sync-${{ github.run_id }}
+          restore-keys: last-sync-
+      - run: node sync.mjs ${{ inputs.force && '--force' || '' }}
+        env:
+          PP_TOKEN: ${{ secrets.PP_TOKEN }}
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: .last-sync
+          key: last-sync-${{ github.run_id }}
